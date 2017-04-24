@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import os
-import StringIO
+#import StringIO
 import scipy.misc
 import numpy as np
 from glob import glob
@@ -98,21 +98,15 @@ class Trainer(object):
         self.G = GeneratorCNN(
                 self.z_num, self.D.conv2_input_dim, channel, repeat_num, self.conv_hidden_num, self.num_gpu)
 
-        self.G.apply(weights_init)
-        self.D.apply(weights_init)
+        # self.G.apply(weights_init)
+        # self.D.apply(weights_init)
 
     def train(self):
-        l1 = L1Loss()
-
-        z_D = Variable(torch.FloatTensor(self.batch_size, self.z_num))
-        z_G = Variable(torch.FloatTensor(self.batch_size, self.z_num))
-        z_fixed = Variable(torch.FloatTensor(self.batch_size, self.z_num).normal_(0, 1), volatile=True)
+        z = Variable(torch.FloatTensor(self.batch_size, self.z_num))
+        z_fixed = Variable(torch.randn(self.batch_size, self.z_num), volatile=True)
 
         if self.num_gpu > 0:
-            l1.cuda()
-
-            z_D = z_D.cuda()
-            z_G = z_G.cuda()
+            z = z.cuda()
             z_fixed = z_fixed.cuda()
 
         if self.optimizer == 'adam':
@@ -144,31 +138,38 @@ class Trainer(object):
             x = self._get_variable(x)
             batch_size = x.size(0)
 
+            #============ Train D ============#
+            # zero the grad buffer
             self.D.zero_grad()
-            self.G.zero_grad()
-
-            z_D.data.normal_(0, 1)
-            z_G.data.normal_(0, 1)
-
-            #sample_z_D = self.G(z_D)
-            sample_z_G = self.G(z_G)
-
+            
+            # train with real image
             AE_x = self.D(x)
-            AE_G_d = self.D(sample_z_G.detach())
-            AE_G_g = self.D(sample_z_G)
-
-            d_loss_real = l1(AE_x, x)
-            d_loss_fake = l1(AE_G_d, sample_z_G.detach())
+            d_loss_real = torch.mean(torch.abs(AE_x - x))
+            
+            
+            # train with fake image
+            z.data.normal_(0, 1)
+            fake_image = self.G(z)
+            AE_fake = self.D(fake_image.detach())
+            d_loss_fake = torch.mean(torch.abs(AE_fake - fake_image.detach()))
 
             d_loss = d_loss_real - k_t * d_loss_fake
-            g_loss = l1(sample_z_G, AE_G_g) # this won't still solve the problem
-
-            loss = d_loss + g_loss
-            loss.backward()
-
-            g_optim.step()
+            d_loss.backward()
             d_optim.step()
-
+            
+            #============ Train G ============#
+            # zero the grad buffer
+            self.G.zero_grad()
+            
+            # train with fake image
+            z.data.normal_(0, 1)
+            fake_image = self.G(z)
+            AE_fake = self.D(fake_image)
+            g_loss = torch.mean(torch.abs(AE_fake - fake_image))
+            
+            g_loss.backward()
+            g_optim.step()
+            
             g_d_balance = (self.gamma * d_loss_real - d_loss_fake).data[0]
             k_t += self.lambda_k * g_d_balance
             k_t = max(min(1, k_t), 0)
